@@ -15,8 +15,12 @@ def login():
     password = (request.json or {}).get("password", "")
 
     conn = sqlite3.connect(current_app.config["TASKNOTES_DB"])
-    query = f"SELECT id, username FROM users WHERE username = '{username}' AND password = '{password}'"
-    row = conn.execute(query).fetchone()
+    # wayuvuln fix (CWE-89): consulta PARAMETRIZADA — el input jamás se
+    # interpola en el SQL, por lo que ningún payload puede alterar la cláusula.
+    row = conn.execute(
+        "SELECT id, username FROM users WHERE username = ? AND password = ?",
+        (username, password),
+    ).fetchone()
     conn.close()
 
     if row is None:
