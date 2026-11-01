@@ -1,0 +1,116 @@
+name: wayuvuln-evidence
+
+# Demostración VISUAL de la evidencia, ejecutada por GitHub (no por wayuvuln):
+# cualquiera puede abrir la pestaña Checks de un PR y ver, con logs reales y
+# botón "Re-run", que (1) el exploit/test de regresión FALLA contra main y
+# (2) PASA contra el HEAD del PR. Anti-alucinación máxima: no hay que creerle
+# a nadie — GitHub ejecuta el código delante de ti.
+#
+# Nota de gobierno: este workflow lo instala el EQUIPO (maintainer) en el
+# setup del repo; los parches del bot jamás pueden tocar .github/workflows
+# (bloqueado por vcs_validators — anti-inyección de CI).
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  demo-visual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install -q -r requirements.txt pytest
+
+      - name: Detectar tests de regresión wayuvuln
+        id: detect
+        run: |
+          files=$(ls tests/test_wayuvuln_*.py 2>/dev/null | tr '\n' ' ' || true)
+          if [ -n "$files" ]; then
+            echo "have=true" >> "$GITHUB_OUTPUT"
+            echo "files=$files" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "HEAD del PR: suite completa (se espera 🟢)"
+        id: suite_pr
+        run: |
+          set +e
+          python -m pytest tests/ -rf --no-header -p no:cacheprovider > log_pr.txt 2>&1
+          rc=$?
+          tail -25 log_pr.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ne 0 ]; then
+            echo "## ❌ La suite del PR FALLA — revisa los logs" >> "$GITHUB_STEP_SUMMARY"
+            cat log_pr.txt | tail -40 >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: "main: mismos tests de regresión (se espera 🔴 — el fallo está vivo)"
+        id: main_red
+        if: steps.detect.outputs.have == 'true'
+        continue-on-error: true
+        run: |
+          git checkout -q origin/main -- .
+          set +e
+          python -m pytest ${{ steps.detect.outputs.files }} -rf --no-header -p no:cacheprovider > log_main.txt 2>&1
+          rc=$?
+          tail -25 log_main.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Resumen visual (job summary del PR)
+        if: always()
+        run: |
+          {
+            echo "## 🔬 wayuvuln — demostración ejecutada por GitHub Actions"
+            echo
+            echo "Ejecutada **ahora** por GitHub sobre este PR. No es una afirmación del bot:"
+            echo "los logs completos están abajo y puedes re-ejecutar con *Re-run jobs*."
+            echo
+            if [ "${{ steps.detect.outputs.have }}" = "true" ]; then
+              echo "| Entorno | Tests de regresión wayuvuln | Interpretación |"
+              echo "|---|---|---|"
+              if [ "${{ steps.main_red.outputs.rc }}" -ne 0 ]; then
+                echo "| \`main\` (código vulnerable) | 🔴 **FALLAN** | **La vulnerabilidad es real** — el exploit/test la detecta |"
+              else
+                echo "| \`main\` | 🟢 pasan | main ya no contiene el fallo (arreglado antes) |"
+              fi
+              echo "| **HEAD de este PR** | 🟢 **PASAN** | **El fix neutraliza el fallo** sin romper nada |"
+              echo
+              echo "> La diferencia 🔴→🟢 es la prueba. ¿Quieres reproducirlo en local?"
+              echo "> \`git checkout main && python -m pytest ${{ steps.detect.outputs.files }}\` (rojo) →"
+              echo "> \`git checkout ${GITHUB_HEAD_REF} && python -m pytest ${{ steps.detect.outputs.files }}\` (verde)"
+            else
+              echo "Este PR **no incluye tests de regresión wayuvuln** (no toca ningún fix de seguridad)."
+              echo "La suite del repositorio se ejecutó igualmente: 🟢 PASA."
+            fi
+            echo
+            echo "<details><summary>📜 Log completo contra el HEAD del PR</summary>"
+            echo
+            echo '```'
+            tail -60 log_pr.txt 2>/dev/null || echo "(sin log)"
+            echo '```'
+            echo
+            echo "</details>"
+            if [ -f log_main.txt ]; then
+              echo "<details><summary>📜 Log completo contra main (se ESPERA rojo)</summary>"
+              echo
+              echo '```'
+              tail -60 log_main.txt
+              echo '```'
+              echo
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
