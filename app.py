@@ -28,6 +28,10 @@ def create_app() -> Flask:
     os.makedirs(app.config["TASKNOTES_UPLOADS"], exist_ok=True)
     app.register_blueprint(files_bp)
 
+    from tools import tools_bp
+
+    app.register_blueprint(tools_bp)
+
     @app.get("/health")
     def health():
         return jsonify(ok=True, service="tasknotes")
